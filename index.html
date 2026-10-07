@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Eco Tetris</title>
+<style>
+:root{--bg:#eef3e8;--panel:#fbfdf8;--ink:#1f3324;--muted:#5d6f60;--court:#dfe9d6;--line:#9fb39a;--accent:#2f7d4f;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#101a13;--panel:#17251b;--ink:#e6f1e4;--muted:#9bb09e;--court:#0d1610;--line:#2f4636;--accent:#6fcf97}}
+:root[data-theme="dark"]{--bg:#101a13;--panel:#17251b;--ink:#e6f1e4;--muted:#9bb09e;--court:#0d1610;--line:#2f4636;--accent:#6fcf97}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Georgia,"Times New Roman",serif;display:flex;justify-content:center;padding:16px}
+#game{display:flex;gap:16px;align-items:flex-start;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;max-width:100%}
+#side{width:130px;display:flex;flex-direction:column;gap:12px;font-size:15px}
+#side h1{font-size:20px;margin:0;line-height:1.1}
+#side p{margin:0;color:var(--muted)}
+#side b{color:var(--ink);font-size:20px;display:block}
+#upcoming{width:100px;height:100px;background:var(--court);border:1px solid var(--line);border-radius:4px}
+#start{font:inherit;font-size:15px;padding:10px;border:0;border-radius:6px;background:var(--accent);color:var(--panel);cursor:pointer}
+#start:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+#wrap{position:relative}
+#canvas{display:block;width:240px;height:480px;background:url(texture.jpg) center/cover no-repeat,var(--court);border:1px solid var(--line);border-radius:4px}
+#win{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;gap:12px;padding:20px;background:color-mix(in srgb,var(--panel) 94%,transparent);border-radius:4px;text-align:left}
+#win.on{display:flex}
+#win h2{margin:0;font-size:26px}
+#win p{margin:0;line-height:1.5}
+#win small{color:var(--muted)}
+@media (max-width:480px){#game{flex-direction:column;align-items:center}#side{width:auto;flex-direction:row;flex-wrap:wrap;justify-content:center;align-items:center}#canvas{width:200px;height:400px}}
+</style>
+</head>
+<body>
+<div id="game">
+  <div id="side">
+    <h1>Eco Tetris</h1>
+    <canvas id="upcoming"></canvas>
+    <p>Score <b id="score">00000</b></p>
+    <p>Rows <b><span id="rows">0</span> / 3</b></p>
+    <button id="start" onclick="play()">Press Space to play</button>
+    <p><small>Arrows move, up rotates, Esc quits. Clear 3 rows to win.</small></p>
+  </div>
+  <div id="wrap">
+    <canvas id="canvas"></canvas>
+    <div id="win" role="dialog" aria-live="polite">
+      <h2>You win!</h2>
+      <p id="fact"></p>
+      <small>Press Space to play again.</small>
+    </div>
+  </div>
+</div>
+<script>
+var WIN_ROWS = 3;
+var FACTS = [
+  "A single tree can absorb about 22 kg of carbon dioxide a year, and release enough oxygen for two people.",
+  "Recycling one aluminium can saves enough energy to run a TV for around three hours.",
+  "Bees pollinate roughly one in every three bites of food we eat.",
+  "Seagrass meadows store carbon up to 35 times faster than tropical rainforests.",
+  "The ocean produces more than half of the world's oxygen, mostly from tiny phytoplankton.",
+  "Glass can be recycled endlessly without losing quality.",
+  "A leaky tap dripping once a second wastes more than 10,000 litres of water a year.",
+  "Octopuses, otters and sea urchins all help keep kelp forests healthy, and kelp absorbs carbon too.",
+  "Wind turbines pay back the energy used to make them in less than a year of running."
+];
+function get(id){return document.getElementById(id);}
+function html(id,h){get(id).innerHTML=h;}
+function timestamp(){return new Date().getTime();}
+function random(a,b){return a+Math.random()*(b-a);}
+
+var KEY={ESC:27,SPACE:32,LEFT:37,UP:38,RIGHT:39,DOWN:40},
+DIR={UP:0,RIGHT:1,DOWN:2,LEFT:3,MIN:0,MAX:3},
+canvas=get('canvas'),ctx=canvas.getContext('2d'),
+ucanvas=get('upcoming'),uctx=ucanvas.getContext('2d'),
+speed={start:0.5,decrement:0.04,min:0.15},
+nx=10,ny=20,nu=5;
+var dx,dy,blocks,actions,playing,dt,current,next,score,vscore,rows,step;
+
+// nature palette
+var I={size:4,blocks:[0x0F00,0x2222,0x00F0,0x4444],color:'#3fb8af'};   // lagoon
+var J={size:3,blocks:[0x44C0,0x8E00,0x6440,0x0E20],color:'#2f6fb0'};   // ocean
+var L={size:3,blocks:[0x4460,0x0E80,0xC440,0x2E00],color:'#b5703c'};   // soil
+var O={size:2,blocks:[0xCC00,0xCC00,0xCC00,0xCC00],color:'#f2c14e'};   // sunflower
+var S={size:3,blocks:[0x06C0,0x8C40,0x6C00,0x4620],color:'#4caf50'};   // leaf
+var T={size:3,blocks:[0x0E40,0x4C40,0x4E00,0x4640],color:'#8e6bbf'};   // lavender
+var Z={size:3,blocks:[0x0C60,0x4C80,0xC600,0x2640],color:'#e0655a'};   // poppy
+
+function eachblock(type,x,y,dir,fn){
+  var bit,row=0,col=0,b=type.blocks[dir];
+  for(bit=0x8000;bit>0;bit>>=1){
+    if(b&bit)fn(x+col,y+row);
+    if(++col===4){col=0;++row;}
+  }
+}
+function occupied(type,x,y,dir){
+  var r=false;
+  eachblock(type,x,y,dir,function(x,y){
+    if(x<0||x>=nx||y<0||y>=ny||getBlock(x,y))r=true;
+  });
+  return r;
+}
+function unoccupied(t,x,y,d){return !occupied(t,x,y,d);}
+
+var pieces=[];
+function randomPiece(){
+  if(pieces.length==0)pieces=[I,I,I,I,J,J,J,J,L,L,L,L,O,O,O,O,S,S,S,S,T,T,T,T,Z,Z,Z,Z];
+  var type=pieces.splice(Math.floor(random(0,pieces.length)),1)[0];
+  return {type:type,dir:DIR.UP,x:Math.round(random(0,nx-type.size)),y:0};
+}
+
+function run(){
+  document.addEventListener('keydown',keydown,false);
+  window.addEventListener('resize',resize,false);
+  var last=timestamp(),now;
+  function frame(){
+    now=timestamp();
+    update(Math.min(1,(now-last)/1000));
+    draw();
+    last=now;
+    requestAnimationFrame(frame);
+  }
+  resize();reset();frame();
+}
+function resize(){
+  canvas.width=canvas.clientWidth;canvas.height=canvas.clientHeight;
+  ucanvas.width=ucanvas.clientWidth;ucanvas.height=ucanvas.clientHeight;
+  dx=canvas.width/nx;dy=canvas.height/ny;
+  invalidate();invalidateNext();
+}
+function keydown(ev){
+  var handled=false;
+  if(playing){
+    switch(ev.keyCode){
+      case KEY.LEFT:actions.push(DIR.LEFT);handled=true;break;
+      case KEY.RIGHT:actions.push(DIR.RIGHT);handled=true;break;
+      case KEY.UP:actions.push(DIR.UP);handled=true;break;
+      case KEY.DOWN:actions.push(DIR.DOWN);handled=true;break;
+      case KEY.ESC:lose();handled=true;break;
+    }
+  }else if(ev.keyCode==KEY.SPACE){play();handled=true;}
+  if(handled)ev.preventDefault();
+}
+
+function play(){
+  get('start').style.visibility='hidden';
+  get('win').classList.remove('on');
+  reset();playing=true;
+}
+function lose(){get('start').style.visibility='visible';setVisualScore();playing=false;}
+function win(){
+  playing=false;setVisualScore();
+  get('start').style.visibility='visible';
+  html('fact',FACTS[Math.floor(Math.random()*FACTS.length)]);
+  get('win').classList.add('on');
+}
+function setVisualScore(n){vscore=n||score;invalidateScore();}
+function setScore(n){score=n;setVisualScore(n);}
+function addScore(n){score+=n;}
+function setRows(n){rows=n;step=Math.max(speed.min,speed.start-speed.decrement*rows);invalidateRows();}
+function addRows(n){setRows(rows+n);}
+function getBlock(x,y){return(blocks&&blocks[x]?blocks[x][y]:null);}
+function setBlock(x,y,type){blocks[x]=blocks[x]||[];blocks[x][y]=type;invalidate();}
+function setCurrentPiece(p){current=p||randomPiece();invalidate();}
+function setNextPiece(p){next=p||randomPiece();invalidateNext();}
+function reset(){
+  dt=0;actions=[];blocks=[];invalidate();
+  setRows(0);setScore(0);
+  setCurrentPiece(next);setNextPiece();
+}
+function update(idt){
+  if(playing){
+    if(vscore<score)setVisualScore(vscore+1);
+    handle(actions.shift());
+    dt+=idt;
+    if(dt>step){dt-=step;drop();}
+  }
+}
+function handle(a){
+  switch(a){
+    case DIR.LEFT:move(DIR.LEFT);break;
+    case DIR.RIGHT:move(DIR.RIGHT);break;
+    case DIR.UP:rotate();break;
+    case DIR.DOWN:drop();break;
+  }
+}
+function move(dir){
+  var x=current.x,y=current.y;
+  if(dir==DIR.RIGHT)x++;else if(dir==DIR.LEFT)x--;else if(dir==DIR.DOWN)y++;
+  if(unoccupied(current.type,x,y,current.dir)){current.x=x;current.y=y;invalidate();return true;}
+  return false;
+}
+function rotate(){
+  var nd=(current.dir==DIR.MAX?DIR.MIN:current.dir+1);
+  if(unoccupied(current.type,current.x,current.y,nd)){current.dir=nd;invalidate();}
+}
+function drop(){
+  if(!move(DIR.DOWN)){
+    addScore(10);
+    dropPiece();
+    removeLines();
+    if(rows>=WIN_ROWS){win();return;}
+    setCurrentPiece(next);setNextPiece(randomPiece());actions=[];
+    if(occupied(current.type,current.x,current.y,current.dir))lose();
+  }
+}
+function dropPiece(){
+  eachblock(current.type,current.x,current.y,current.dir,function(x,y){setBlock(x,y,current.type);});
+}
+function removeLines(){
+  var x,y,complete,n=0;
+  for(y=ny;y>0;--y){
+    complete=true;
+    for(x=0;x<nx;++x)if(!getBlock(x,y))complete=false;
+    if(complete){removeLine(y);y++;n++;}
+  }
+  if(n>0){addRows(n);addScore(100*Math.pow(2,n-1));}
+}
+function removeLine(n){
+  var x,y;
+  for(y=n;y>=0;--y)for(x=0;x<nx;++x)setBlock(x,y,(y==0)?null:getBlock(x,y-1));
+}
+
+var invalid={};
+function invalidate(){invalid.court=true;}
+function invalidateNext(){invalid.next=true;}
+function invalidateScore(){invalid.score=true;}
+function invalidateRows(){invalid.rows=true;}
+function draw(){
+  ctx.save();ctx.lineWidth=1;ctx.translate(0.5,0.5);
+  drawCourt();drawNext();drawScore();drawRows();
+  ctx.restore();
+}
+function drawCourt(){
+  if(invalid.court){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if(playing)drawPiece(ctx,current.type,current.x,current.y,current.dir);
+    var x,y,b;
+    for(y=0;y<ny;y++)for(x=0;x<nx;x++)if(b=getBlock(x,y))drawBlock(ctx,x,y,b.color);
+    invalid.court=false;
+  }
+}
+function drawNext(){
+  if(invalid.next){
+    var pad=(nu-next.type.size)/2;
+    uctx.save();uctx.translate(0.5,0.5);
+    uctx.clearRect(0,0,ucanvas.width,ucanvas.height);
+    uctx.lineWidth=1;
+    var sx=ucanvas.width/nu;
+    eachblock(next.type,pad,pad,next.dir,function(x,y){
+      uctx.fillStyle=next.type.color;uctx.fillRect(x*sx,y*sx,sx,sx);
+      uctx.strokeStyle='rgba(0,0,0,0.35)';uctx.strokeRect(x*sx,y*sx,sx,sx);
+    });
+    uctx.restore();invalid.next=false;
+  }
+}
+function drawScore(){if(invalid.score){html('score',("00000"+Math.floor(vscore)).slice(-5));invalid.score=false;}}
+function drawRows(){if(invalid.rows){html('rows',rows);invalid.rows=false;}}
+function drawPiece(c,type,x,y,dir){eachblock(type,x,y,dir,function(x,y){drawBlock(c,x,y,type.color);});}
+function drawBlock(c,x,y,color){
+  c.fillStyle=color;c.fillRect(x*dx,y*dy,dx,dy);
+  c.strokeStyle='rgba(0,0,0,0.35)';c.strokeRect(x*dx,y*dy,dx,dy);
+}
+run();
+</script>
+</body>
+</html>
